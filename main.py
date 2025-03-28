@@ -8,12 +8,13 @@ Entry point for the application.
 import time
 import sqlite3
 import logging
+import datetime
 from tqdm import tqdm
 from typing import Type
 from pathlib import Path
 
 # **** LOCAL IMPORTS ****
-from cse5525_final_project.metric import Metric
+from cse5525_final_project.metric import Metric, MetricComputationTimes
 from cse5525_final_project.metrics import generate_iqa_metric_classes
 from cse5525_final_project.util import (
     load_image_from_uuid,
@@ -116,8 +117,8 @@ def main():
         
         # Generate file paths for each image
         image_paths = {}
-        shortened_list = list(combined_dict.keys())[:1]  # TODO: Remove this line to process all images
-        for image_uuid in shortened_list:
+        combined_dict = list(combined_dict.keys())[:2]  # TODO: Remove this line to process all images
+        for image_uuid in combined_dict:
             image_uuid: str = image_uuid.strip()
             # Keys are image names, so we need to remove the extension to get the UUID
             image_uuid = image_uuid.split(".")[0]  # Remove the file extension
@@ -131,6 +132,8 @@ def main():
         
         # ****
         # Compute and store metrics for each image
+        MetricComputationTimes.create_table(conn)  # Ensure table is created before loops
+
         for image_uuid in tqdm(image_paths.keys(), desc="Processing Images"):
             image_path: Path = image_paths[image_uuid]
 
@@ -144,21 +147,36 @@ def main():
             # Attempt each metric for this image
             for metric_class in metric_classes:
                 metric_class: Type[Metric]
-                metric_start_time = time.perf_counter()
 
-                # Compute and store the metric
+                # Use datetime to capture start and end times in ISO format
+                metric_start = datetime.datetime.now()
+
                 try:
                     metric_class.compute_and_store(conn, image_path)
                 except Exception as e:
                     logger.error(f"Failed to compute/store {metric_class.__name__} for {image_uuid}: {e}")
 
-                # Log the time taken for this metric if it exceeds the threshold
-                metric_end_time = time.perf_counter()
-                elapsed = metric_end_time - metric_start_time
+                metric_end = datetime.datetime.now()
+
+                # Calculate elapsed time in seconds
+                elapsed = (metric_end - metric_start).total_seconds()
+
+                # Insert record with ISO 8601 times
+                MetricComputationTimes.insert_record(
+                    conn,
+                    {
+                        "uuid": image_uuid,
+                        "metric_name": metric_class.__name__,
+                        "start_time": metric_start.isoformat(),
+                        "end_time": metric_end.isoformat()
+                    }
+                )
+
                 if elapsed > IMAGE_METRIC_COMPUTATION_TIME_LOGGING_THRESHOLD:
                     logger.info(
                         f"Metric {metric_class.__name__} for {image_uuid} took {elapsed:.3f} seconds"
                     )
+
 
     except Exception as e:
         logger.error(f"Caught exception during execution", exc_info=e)
@@ -174,7 +192,33 @@ def main():
 
 # ****
 if __name__ == "__main__":
+    # ****
+    # Suppress warnings
+    import warnings
+
+    # Suppress all UserWarnings and FutureWarnings
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=FutureWarning)
+
+    # (Optional) suppress specific messages
+    warnings.filterwarnings("ignore", message=".*resume_download.*")
+    warnings.filterwarnings("ignore", message=".*do_sample.*")
+    warnings.filterwarnings("ignore", message=".*top_p.*")
+    warnings.filterwarnings("ignore", message=".*meshgrid.*")
+    
+    # ****
+    # Set up logging
     import logging.config
-    # logging.disable(logging.DEBUG)
+    logging.disable(logging.DEBUG)
+
+    # Suppress specific loggers
+    logging.getLogger("pyiqa").setLevel(logging.WARNING)
+    logging.getLogger("timm").setLevel(logging.WARNING)
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    logging.getLogger("load_pretrained").setLevel(logging.WARNING)
+    logging.getLogger("load_state_dict_from_hf").setLevel(logging.WARNING)
+
     logging.config.dictConfig(LOGGER_CONFIG)
+    
+    # ****
     main()

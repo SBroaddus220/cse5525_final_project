@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------------------------------
 
 # **** CONSTANTS ****
-IMAGE_METRIC_COMPUTATION_TIME_LOGGING_THRESHOLD = 0.5  # Seconds
+IMAGE_METRIC_COMPUTATION_TIME_LOGGING_THRESHOLD = 5  # Seconds
 
 # **** PATHS ****
 BASE_DIR = Path(__file__).resolve().parent.parent
