@@ -33,14 +33,28 @@ source ./.venv/bin/activate  # Activate on Linux
 python -m pip install -r ./requirements.txt
 ```
 
+### Adding Files
+The logic for finding files is defined in `./main.py`. 
+UIDs are used to reference files in the Metric classes and so each file must have a UID that is capable of being generated with just the file path as input.
+Currently, the application is tied to the [DiffusionDB](https://poloclub.github.io/diffusiondb/), so UIDs and file paths are based on its structure.
+If additional databases are desired, new logic to relate the file paths & UIDs is necessary and generation must be changed in `main.py`.
+
+#### `DiffusionDB` Data Download
+The Poloclub downloader script is provided in the `./scripts/` directory. 
+An example use case is provided below:
+```bash
+python ./scripts/download.py -i 23 --output "./data/images"
+```
+This will place the downloaded zip file in the correct location. Please extract it at the same location, and then the application should automatically recognize the data.
+
 ### Running the Application
 To run the application, run:
 ```bash
 python ./main.py
-```
+```   
 
 ### Running Scripts
-There are several scripts in the `./scripts` directory. These can be run as any python script.
+There are several scripts in the `./scripts/` directory. These can be run as any python script.
 Please refer to the docstrings of any script for any specific instructions.
 ```bash
 # Example format
