@@ -33,6 +33,18 @@ source ./.venv/bin/activate  # Activate on Linux
 python -m pip install -r ./requirements.txt
 ```
 
+4. Ensure PyTorch is installed with CUDA if using GPU
+Check if PyTorch is able to recognize your GPU:
+```python
+import torch
+print(torch.cuda.is_available())  # Should be True
+print(torch.cuda.device_count())  # Should be >=1
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU found")  # Should display desired GPU
+```
+If any of the following are not what they should be, then properly install the CUDA-enabled version of PyTorch.
+Following instructions at the [official PyTorch Website](https://pytorch.org/get-started/locally/)
+
+
 ### Adding Files
 The logic for finding files is defined in `./main.py`. 
 UIDs are used to reference files in the Metric classes and so each file must have a UID that is capable of being generated with just the file path as input.

@@ -5,15 +5,26 @@ Logic regarding metrics for application data.
 """
 
 # **** IMPORTS ****
+import pyiqa
 import sqlite3
 import logging
 import numpy as np
 from PIL import Image
 from pathlib import Path
+from typing import Optional, Type, Dict, List
+
+import torch
+from torchvision import transforms
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 # **** LOCAL IMPORTS ****
 from cse5525_final_project.metric import Metric
-from cse5525_final_project.util import get_image_uuid
+from cse5525_final_project.util import (
+    get_image_uuid,
+    sanitize_classname,
+    sanitize_sqlite_identifier,
+)
 
 # **** LOGGING ****
 logger = logging.getLogger(__name__)
@@ -415,6 +426,119 @@ class SaturationScore(Metric):
         })
 
         logging.debug("Stored saturation score for %s: %.4f", uuid, saturation_score)
+
+
+# **** FUNCTIONS ****
+def generate_iqa_metric_classes(
+    whitelist: Optional[List[str]] = None,
+    blacklist: Optional[List[str]] = None
+) -> Dict[str, Type[Metric]]:
+    """
+    Dynamically creates Metric subclasses for each metric available in pyiqa,
+    optionally filtered by a whitelist or a blacklist. This ensures that each
+    closure captures the correct metric name (avoiding duplicated results).
+
+    Args:
+        whitelist (Optional[List[str]]): List of metric names to include.
+        blacklist (Optional[List[str]]): List of metric names to exclude.
+
+    Returns:
+        Dict[str, Type[Metric]]: A dictionary mapping metric name to its
+            dynamically created Metric subclass.
+    """
+    all_model_names = pyiqa.list_models()
+    whitelist_set = set(whitelist) if whitelist else set(all_model_names)
+    blacklist_set = set(blacklist) if blacklist else set()
+
+    # Filter out unwanted metrics
+    final_metric_names = [
+        m for m in all_model_names
+        if m in whitelist_set and m not in blacklist_set
+    ]
+
+    metric_classes = {}
+
+    for metric_name in final_metric_names:
+        # Sanitize names
+        sanitized_table_name = f"iqa_{sanitize_sqlite_identifier(metric_name)}_metrics"
+        sanitized_class_name = f"IQAMetric_{sanitize_classname(metric_name)}"
+        table_class_name = f"{sanitize_classname(metric_name)}Table"
+
+        # Function factory to capture the correct metric_name
+        def make_compute_and_store_method(mname: str):
+            """
+            Ensures each closure captures the correct metric_name.
+            """
+            def compute_and_store_method(cls, conn: sqlite3.Connection, file_path: Path) -> None:
+                """
+                Computes the metric value for the given image and stores it in the
+                corresponding SQLite table.
+
+                Args:
+                    conn (sqlite3.Connection): SQLite database connection.
+                    file_path (Path): Path to the image file.
+                """
+                cls.Table.create_table(conn)
+                if not cls.Table.verify_table(conn):
+                    raise Exception(
+                        f"Required columns missing in {cls.Table.table_name} table."
+                    )
+
+                uuid = get_image_uuid(file_path)
+                if cls.Table.entry_exists(conn, uuid):
+                    logger.debug("Metric %s already exists for UUID: %s", mname, uuid)
+                    return
+
+                transform = transforms.Compose([transforms.ToTensor()])
+                with Image.open(file_path).convert("RGB") as img:
+                    img_tensor = transform(img).unsqueeze(0).to(device)
+
+                metric_obj = pyiqa.create_metric(mname, device=device)
+                score = metric_obj(img_tensor)
+
+                cls.Table.insert_record(conn, {"uuid": uuid, "value": float(score.item())})
+                logger.debug("Stored %s for %s: %.4f", mname, uuid, score.item())
+
+            return compute_and_store_method
+
+        # Define the table class
+        def create_table_method(cls, conn: sqlite3.Connection) -> None:
+            """Creates the SQLite table for this metric."""
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {cls.table_name} (
+                    uuid TEXT NOT NULL,
+                    value REAL NOT NULL
+                );
+                """
+            )
+            conn.commit()
+
+        TableClass = type(
+            table_class_name,
+            (Metric.MetricTable,),
+            {
+                "table_name": sanitized_table_name,
+                "required_columns": {"uuid", "value"},
+                "create_table": classmethod(create_table_method),
+            }
+        )
+
+        # Create the Metric subclass
+        MetricClass = type(
+            sanitized_class_name,
+            (Metric,),
+            {
+                "Table": TableClass,
+                "__doc__": f"Metric class for the {metric_name} IQA metric.",
+                "compute_and_store": classmethod(make_compute_and_store_method(metric_name)),
+            }
+        )
+
+        metric_classes[metric_name] = MetricClass
+
+    return metric_classes
+
 
 
 # ****

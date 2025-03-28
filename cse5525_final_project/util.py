@@ -5,6 +5,7 @@ Utilities for the application.
 """
 
 # **** IMPORTS ****
+import re
 import json
 import inspect
 import logging
@@ -16,6 +17,15 @@ from typing import Optional, Type, List
 logger = logging.getLogger(__name__)
 
 # **** FUNCTIONS ****
+def sanitize_sqlite_identifier(name: str) -> str:
+    """Replaces problematic characters in SQLite identifiers with underscores."""
+    return re.sub(r'[^a-zA-Z0-9_]', '_', name)
+
+def sanitize_classname(name: str) -> str:
+    """Sanitizes a string to be a valid Python class name."""
+    name = re.sub(r'[^a-zA-Z0-9]', '_', name)
+    return name[0].upper() + name[1:] if name else "Unnamed"
+
 def get_image_uuid(file_path: Path) -> str:
     """
     Returns the UUID of the image file.

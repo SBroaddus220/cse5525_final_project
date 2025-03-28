@@ -14,6 +14,7 @@ from pathlib import Path
 
 # **** LOCAL IMPORTS ****
 from cse5525_final_project.metric import Metric
+from cse5525_final_project.metrics import generate_iqa_metric_classes
 from cse5525_final_project.util import (
     load_image_from_uuid,
     load_json_documents,
@@ -59,6 +60,48 @@ def main():
         if not metric_classes:
             logger.warning(f"No metrics found in the file: {METRICS_FILE_PATH}")
             return
+
+        # ****
+        # Generate pyiqa metrics
+        logger.info("Generating pyiqa metrics...")
+        iqa_metric_classes = generate_iqa_metric_classes(
+            blacklist=[
+                "ahiq",  # Full Reference metric
+                "ckdn",  # Full Reference metric
+                "clipscore",  # Needs a caption list
+                "cw_ssim",  # Full Reference metric
+                "dists",  # Full Reference metric
+                "fid",  # TODO: Figure out error
+                "fsim",  # Full Reference metric
+                "gmsd",  # Full Reference metric
+                "inception_score",  # TODO: Figure out error
+                "lpips",  # Full Reference metric
+                "lpips+",  # Full Reference metric
+                "lpips-vgg",  # Full Reference metric
+                "lpips-vgg+",  # Full Reference metric
+                "mad",  # Full Reference metric
+                "ms_ssim",  # Full Reference metric
+                "msswd",  # Full Reference metric
+                "nlpd",  # Full Reference metric
+                "pieapp",  # Full Reference metric
+                "psnr",  # Full Reference metric
+                "psnry",  # Full Reference metric
+                "qalign_4bit",  # TODO: Figure out error
+                "ssim",  # Full Reference metric
+                "ssimc",  # Full Reference metric
+                "stlpips",  # Full Reference metric
+                "stlpips-vgg",  # Full Reference metric
+                "topiq_fr",  # Full Reference metric
+                "topiq_fr-pipal",  # Full Reference metric
+                "vif",  # Full Reference metric
+                "vsi",  # Full Reference metric
+                "wadiqam_fr",  # Full Reference metric
+            ]
+        ).values()
+        if not iqa_metric_classes:
+            logger.warning("No pyiqa metrics found")
+            return
+        metric_classes.extend(iqa_metric_classes)
         
         # ****
         # Load images
@@ -73,7 +116,7 @@ def main():
         
         # Generate file paths for each image
         image_paths = {}
-        shortened_list = list(combined_dict.keys())[:3]  # Only get the first three items for testing
+        shortened_list = list(combined_dict.keys())[:1]  # TODO: Remove this line to process all images
         for image_uuid in shortened_list:
             image_uuid: str = image_uuid.strip()
             # Keys are image names, so we need to remove the extension to get the UUID

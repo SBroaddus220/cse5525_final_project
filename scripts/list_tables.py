@@ -23,6 +23,9 @@ def list_tables_and_records(db_path: str):
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
         
+        # Print number of tables found
+        print(f"Number of tables found: {len(tables)}")
+        
         if tables:
             print("Tables and their records in the database:")
             for table in tables:

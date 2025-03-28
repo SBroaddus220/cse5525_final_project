@@ -1,10 +1,10 @@
 <instructions>
-In my application, I have a set of images which for each I generate some metrics. These metrics are stored in a sqlite database to enable persistance with sufficient ACID compliance. Each metric has a class where they define the table that can store the metric and the logic to compute and store the metric.
-
-Please ONLY provide the implementation for the metric. DO NOT TALK outside of code blocks. Please add type hints and docstrings in Google's format. Please add comments for any large step in any algorithm.
+In my application, I have a set of images which for each I generate some metrics. These metrics are stored in a sqlite database to enable persistance with sufficient ACID compliance. Each metric has a class where they define the table that can store the metric and the logic to compute and store the metric. 
 
 I want you to generate a new class for the following metric(s): 
 # Add metric(s) here
+
+Please ONLY provide the implementation for the metric. DO NOT TALK outside of code blocks. Please add type hints and docstrings in Google's format. Please add comments for any large step in any algorithm.
 </instructions>
 
 Provided below is some existing logic to reference for creating the logic. Please reimplement this in the class(es). If more efficient, please add another method to separate the computation logic.
