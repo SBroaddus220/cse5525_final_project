@@ -47,6 +47,9 @@ Please refer to the docstrings of any script for any specific instructions.
 python ./scripts/script.py
 ```
 
+## Browsing the Database
+To browse the SQLITE3 database, a recommended pre-built solution is [DB Browser for SQLITE](https://sqlitebrowser.org/).
+
 ## Configuration File
 Modifying the configuration file is unneeded, but if you want some customization (e.g. modifying logging config), then feel free to edit the config file at `./cse5525_final_project/config.py`
 
