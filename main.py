@@ -14,6 +14,7 @@ from typing import Type
 from pathlib import Path
 
 # **** LOCAL IMPORTS ****
+from cse5525_final_project.sqlite_table import SQLITETable
 from cse5525_final_project.metric import Metric, MetricComputationTimes
 from cse5525_final_project.metrics import generate_iqa_metric_classes
 from cse5525_final_project.util import (
@@ -21,6 +22,13 @@ from cse5525_final_project.util import (
     load_json_documents,
     combine_dictionaries,
     discover_classes_in_file,
+    compute_shap_explanations,
+    save_shap_results,
+    filter_common_metrics,
+    create_shap_importance_visuals,
+    create_shap_heatmap,
+    compute_average_importance_from_csvs,
+    plot_average_importance_heatmap
 )
 from cse5525_final_project.database import get_db_connection
 from cse5525_final_project.config import (
@@ -117,8 +125,8 @@ def main():
         
         # Generate file paths for each image
         image_paths = {}
-        combined_dict = list(combined_dict.keys())[:2]  # TODO: Remove this line to process all images
-        for image_uuid in combined_dict:
+        shortened_dict = list(combined_dict.keys())[:100]  # TODO: Remove this line to process all images
+        for image_uuid in shortened_dict:
             image_uuid: str = image_uuid.strip()
             # Keys are image names, so we need to remove the extension to get the UUID
             image_uuid = image_uuid.split(".")[0]  # Remove the file extension
@@ -135,6 +143,7 @@ def main():
         MetricComputationTimes.create_table(conn)  # Ensure table is created before loops
 
         for image_uuid in tqdm(image_paths.keys(), desc="Processing Images"):
+            continue
             image_path: Path = image_paths[image_uuid]
 
             # Check if image path exists
@@ -176,6 +185,87 @@ def main():
                     logger.info(
                         f"Metric {metric_class.__name__} for {image_uuid} took {elapsed:.3f} seconds"
                     )
+
+        # ****
+        # Find all metrics in the database for UUIDs
+        logger.info("Finding all metrics in the database...")
+        
+        # For now, just identify floats by checking for a `value` column
+        # TODO: Implement more than just ^  (Optional since IQA is so expansive) 
+        metric_values = {}
+        for metric in metric_classes:
+            metric_table: SQLITETable = metric.Table
+            metric_data = metric_table.fetch_all(conn)
+
+            # Check if the metric has a value column
+            keys = metric_data[0].keys()
+            if not "value" in keys:
+                continue
+
+            # Check for UUID column
+            if "uuid" not in keys:
+                continue
+
+            # Check for existing UUID
+            for row in metric_data:
+                if row["uuid"] in metric_values:
+                    metric_values[str(row["uuid"])][str(metric.__name__)] = row["value"]
+                else:
+                    metric_values[str(row["uuid"])] = {str(metric.__name__): row["value"]}
+            
+        # ****
+        # Fetch prompts for each image UUID
+        uuid_prompts = {}
+        for image_uuid in metric_values.keys():
+            updated_uuid = f"{image_uuid}.png"
+            if updated_uuid in combined_dict:
+                uuid_prompts[image_uuid] = combined_dict[updated_uuid]["p"]
+            else:
+                logger.warning(f"UUID {updated_uuid} not found in combined dictionary")
+        
+        # Dump to json
+        import json
+        with open("metric_data.json", "w") as f:
+            json.dump(metric_values, f, indent=4)
+        with open("uuid_prompts.json", "w") as f:
+            json.dump(uuid_prompts, f, indent=4)
+
+        # ****
+        # Analyze with SHAP
+        logger.info("Analyzing with SHAP...")
+        sorted_metric_values = {k: metric_values[k] for k in sorted(metric_values)}
+        sorted_metric_values = filter_common_metrics(sorted_metric_values)
+        metric_value_names = list(list(sorted_metric_values.values())[0].keys())
+        sorted_uuid_prompts = {k: uuid_prompts[k] for k in sorted(uuid_prompts)}
+        uuids = list(sorted_metric_values.keys())
+        for idx, uuid in enumerate(uuids):
+            if not uuid == list(sorted_uuid_prompts.keys())[idx]:
+                logger.warning(f"UUIDs do not match: {uuid} != {list(sorted_uuid_prompts.keys())[idx]}")
+                continue
+        float_values = []
+        for uuid_metrics in sorted_metric_values.values():
+            float_values.append(list(uuid_metrics.values()))
+        results = compute_shap_explanations(
+            texts=list(uuid_prompts.values()),
+            metrics=float_values,
+        )
+        save_shap_results(
+            results=results,
+            output_dir=Path("shap_results"),
+            metric_names=metric_value_names,
+        )
+        create_shap_importance_visuals(
+            csv_dir=Path("shap_results"),
+        )
+        create_shap_heatmap(
+            csv_dir=Path("shap_results"),
+        )
+        average_imporance = compute_average_importance_from_csvs(
+            csv_dir=Path("shap_results"),
+        )
+        plot_average_importance_heatmap(
+            avg_importance=average_imporance,
+        )
 
 
     except Exception as e:
