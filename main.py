@@ -143,7 +143,6 @@ def main():
         MetricComputationTimes.create_table(conn)  # Ensure table is created before loops
 
         for image_uuid in tqdm(image_paths.keys(), desc="Processing Images"):
-            continue
             image_path: Path = image_paths[image_uuid]
 
             # Check if image path exists
