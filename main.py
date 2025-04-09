@@ -96,6 +96,8 @@ def main():
                 "psnr",  # Full Reference metric
                 "psnry",  # Full Reference metric
                 "qalign_4bit",  # TODO: Figure out error
+                "qalign_8bit",  # TODO: Figure out error
+                "qalign",  # TODO: Figure out error
                 "ssim",  # Full Reference metric
                 "ssimc",  # Full Reference metric
                 "stlpips",  # Full Reference metric
@@ -125,7 +127,7 @@ def main():
         
         # Generate file paths for each image
         image_paths = {}
-        shortened_dict = list(combined_dict.keys())[:100]  # TODO: Remove this line to process all images
+        shortened_dict = list(combined_dict.keys())[:1]  # TODO: Remove this line to process all images
         for image_uuid in shortened_dict:
             image_uuid: str = image_uuid.strip()
             # Keys are image names, so we need to remove the extension to get the UUID
