@@ -198,6 +198,9 @@ def main():
             metric_table: SQLITETable = metric.Table
             metric_data = metric_table.fetch_all(conn)
 
+            if not metric_data:
+                continue
+
             # Check if the metric has a value column
             keys = metric_data[0].keys()
             if not "value" in keys:

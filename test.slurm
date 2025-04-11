@@ -1,12 +1,11 @@
 #!/bin/bash
 #SBATCH --account=PAS2912
-#SBATCH --job-name=cse5525_final_project_compute_metrics_005
+#SBATCH --job-name=hello_world_test2
 #SBATCH --nodes=1
-#SBATCH --time=16:00:00
-#SBATCH --mem=16gb
+#SBATCH --time=00:02:00
 #SBATCH --gpus-per-node=1
-#SBATCH --output=compute_metrics.out
-#SBATCH --error=compute_metrics.err
+#SBATCH --output=hello_world_test2.out
+#SBATCH --error=hello_world_test2.err
 
 # Load CUDA module
 ml cuda/11.8.0  # Ensure it matches your PyTorch installation
@@ -15,4 +14,4 @@ ml cuda/11.8.0  # Ensure it matches your PyTorch installation
 source ./.venv/bin/activate  # Adjust path if `.venv` is in a project folder
 
 # Run your Python script
-python ./main.py
+python ./hello_world.py
