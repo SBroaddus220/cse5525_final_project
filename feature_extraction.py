@@ -1,6 +1,7 @@
 import json
 import re
 import spacy
+from tqdm import tqdm
 
 def extract_categorical_features(prompt):
     prompt = prompt.lower()
@@ -53,28 +54,53 @@ def calculate_complexity(prompt):
     }
     
 
-def extract_features_from_json(file_path):
-    with open(file_path, 'r', encoding='utf-8') as file:
-        data = json.load(file)
 
-    features = {}
-    for key, value in data.items():
+def extract_features_from_json(file_paths: list[str], db_path: str) -> None:
+    """Extract features from multiple JSON datasets and store them in a SQLite database.
+
+    Args:
+        file_paths (list[str]): List of paths to the input JSON files.
+        db_path (str): Path to the output SQLite database file.
+    """
+    combined_data = {}
+
+    # Load and combine data from all files
+    for file_path in file_paths:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+            combined_data.update(data)
+
+    # Take only top 3 data points for testing
+    combined_data = {k: combined_data[k] for k in list(combined_data)[:3]}
+
+    create_database(db_path)
+
+    for key, value in tqdm(combined_data.items(), desc="Extracting and saving features"):
         prompt = value.get('p', '')
         complexity = calculate_complexity(prompt)
         modifiers = count_modifiers_and_entities(prompt)
         categorical_features = extract_categorical_features(prompt)
-        features[key] = {
+
+        feature = {
             'complexity': complexity,
             'modifiers': modifiers,
             'categorical_features': categorical_features
         }
 
-    return features
+        insert_feature(db_path, key, feature)
 
 
 if __name__ == "__main__":
-    file_path = './data/images/part-000023/part-000023.json'
-    features = extract_features_from_json(file_path)
+    file_paths = [
+        './data/images/part-000023/part-000023.json',
+        './data/images/part-000024/part-000024.json',
+        './data/images/part-000025/part-000025.json',
+    ]
+    db_path = './prompt_features.sqlite3'
+    features = extract_features_from_json(file_paths, db_path)
     if features:
         print("Extracted Features:", features)
+        # Dump to JSON file
+        with open('extracted_features.json', 'w', encoding='utf-8') as outfile:
+            json.dump(features, outfile, indent=4)
         
