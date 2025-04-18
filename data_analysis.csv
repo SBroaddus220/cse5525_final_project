@@ -1,0 +1,10 @@
+column,dtype,base_type,cardinality,is_constant,is_binary,skewness,usable_for_correlation,usable_for_shap,usable_for_models
+uuid,object,text,604,False,False,,False,False,False
+value,float64,numeric,579,False,False,0.4704844665597196,True,True,True
+prompt,object,text,516,False,False,,False,False,False
+word_count,float64,numeric,54,False,False,0.19865122922304046,True,True,True
+unique_word_count,float64,numeric,48,False,False,0.23927104779269293,True,True,True
+comma_count,float64,numeric,21,False,False,0.8428142227752128,True,True,True
+complexity_score,float64,numeric,259,False,False,0.48732133318493726,True,True,True
+num_adjectives,float64,numeric,14,False,False,0.582587001085453,True,True,True
+num_named_entities,float64,numeric,7,False,False,1.029709283440543,True,True,True

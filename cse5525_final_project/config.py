@@ -26,6 +26,7 @@ DATA_DIR = BASE_DIR / "data"
 METRICS_FILE_PATH = PROJECT_DIR / "metrics.py"  # Path to the metrics file
 DB_PATH = DATA_DIR / "database.sqlite3"
 IMAGES_DIR = DATA_DIR / "images"
+RESULTS_DIR = BASE_DIR / "results"
 
 # **** LOGGING CONFIGURATION ****
 # Logging configurations
