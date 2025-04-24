@@ -28,6 +28,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
 import torch
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available. Please check your PyTorch installation and GPU setup.")
 from sklearn.model_selection import ParameterGrid
 from sklearn.preprocessing import QuantileTransformer
 
@@ -218,7 +220,7 @@ def attach_keywords(
                 stop_words="english",
                 top_n=top_n,
             )
-            cache[prompt] = " ".join([kw for kw, _ in phrases])
+            cache[prompt] = " | ".join([kw for kw, _ in phrases])
 
         # persist expanded cache
         pd.DataFrame({"prompt": list(cache.keys()),
@@ -650,8 +652,10 @@ class ANNPipelineRunner(BasePipelineRunner):
             "model__hidden_layer_sizes": [(64, 64)],
             "model__activation": ["relu"],
             "model__solver": ["adam"],
-            "model__alpha": [0.0001, 0.001, 0.00001],
-            "model__learning_rate": ["constant", "adaptive"]
+            # "model__alpha": [0.0001, 0.001, 0.00001],
+            "model__alpha": [0.0001],
+            # "model__learning_rate": ["constant", "adaptive"],
+            "model__learning_rate": ["constant"],
         }
 
     def _build_pipeline(self) -> Pipeline:
@@ -716,7 +720,8 @@ class SVRPipelineRunner(BasePipelineRunner):
     def __init__(self) -> None:
         super().__init__()
         self.param_grid = {
-            "model__C": [1.0, 10.0],
+            # "model__C": [1.0, 10.0],
+            "model__C": [1.0],
             # "model__gamma": ["scale", "auto"],
             "model__gamma": ["scale"],
             # "model__kernel": ["rbf", "poly"],
@@ -841,7 +846,8 @@ class KeyBERT_TFIDFPipelineRunner(BasePipelineRunner):
             "model__hidden_layer_sizes": [(64, 64)],
             "model__activation": ["relu"],
             "model__solver": ["adam"],
-            "model__learning_rate": ["constant", "adaptive"],
+            # "model__learning_rate": ["constant", "adaptive"],
+            "model__learning_rate": ["constant"],
         }
 
     def _extract_keywords(self, prompts: pd.Series) -> List[str]:
@@ -1019,8 +1025,12 @@ def record_shap_tokens(  # noqa: D401, PLR0913
     # save CSV with mean |SHAP| per token
     sv = shap_values[0] if isinstance(shap_values, list) else shap_values
     mean_abs = np.abs(sv).mean(axis=0)
+    pretty_names = [
+        phrase.strip().replace("  ", " ").replace("|", " |").replace("  ", " ")
+        for phrase in feature_names
+    ]
     pd.DataFrame(
-        {"token": feature_names, "mean_abs_shap": mean_abs}
+        {"keyphrase": pretty_names, "mean_abs_shap": mean_abs}
     ).to_csv(save_stem.with_suffix(".csv"), index=False)
 
     # beeswarm plot
