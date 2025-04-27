@@ -1,11 +1,10 @@
 #!/bin/bash
-#SBATCH --account=PAS2912
+#SBATCH --account={your account number}
 #SBATCH --job-name=metric_job
 #SBATCH --nodes=1
 #SBATCH --time=02:00:00
 #SBATCH --mem=8G
 #SBATCH --gpus-per-node=1
-#SBATCH --mail-type=FAIL
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 

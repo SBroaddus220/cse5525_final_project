@@ -28,12 +28,16 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import shap
 import torch
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available. Please check your PyTorch installation and GPU setup.")
 from sklearn.model_selection import ParameterGrid
 from sklearn.preprocessing import QuantileTransformer
 
 from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import KFold
 from sklearn.model_selection import GridSearchCV, KFold, train_test_split
 from sklearn.metrics import classification_report, roc_auc_score, average_precision_score, roc_curve
 from sklearn.model_selection import train_test_split, GridSearchCV, ParameterGrid, StratifiedKFold
@@ -64,6 +68,11 @@ from cse5525_final_project.config import (
 # **** LOGGING SETUP ****
 logging.config.dictConfig(LOGGER_CONFIG)
 logging.getLogger().setLevel(logging.INFO)
+# Silence SHAP / explain. SHAP made it so some logs print massive matrices on the INFO level. Who thought that was a good idea?
+for name in ("explain", "shap", "shap.explain"):
+    log = logging.getLogger(name)
+    log.setLevel(logging.WARNING)               # drop INFO
+    log.propagate = False                       # <-- critical
 logger = logging.getLogger(__name__)
 
 
@@ -211,7 +220,7 @@ def attach_keywords(
                 stop_words="english",
                 top_n=top_n,
             )
-            cache[prompt] = " ".join([kw for kw, _ in phrases])
+            cache[prompt] = " | ".join([kw for kw, _ in phrases])
 
         # persist expanded cache
         pd.DataFrame({"prompt": list(cache.keys()),
@@ -565,74 +574,6 @@ class BertCLSEmbedder:
             all_vecs.append(out)
 
         return np.vstack(all_vecs)
-    
-###############################################################################
-#                             BERT EMBEDDER                                   #
-###############################################################################
-class BertCLSEmbedder:
-    """Lightweight util to obtain 768‑D [CLS] embeddings from a BERT model.
-
-    This class is *not* an sklearn transformer to avoid heavy pickling
-    overhead; instead, embedding is done inside a FunctionTransformer wrapper
-    in the pipeline.
-
-    Attributes
-    ----------
-    model_name : str
-        HuggingFace checkpoint to load.
-    max_len : int
-        Maximum token length (padding / truncation).
-    device : str
-        `'cuda'` if available else `'cpu'`.
-    """
-
-    def __init__(
-        self,
-        model_name: str = "bert-base-uncased",
-        max_len: int = 64,
-        device: Optional[str] = None,
-    ) -> None:
-        self.model_name = model_name
-        self.max_len = max_len
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._tokenizer: Optional[AutoTokenizer] = None
-        self._model: Optional[AutoModel] = None
-
-    # --------------------------- internals -------------------------------- #
-
-    def _lazy_load(self) -> None:
-        if self._tokenizer is None or self._model is None:
-            logger.info("Loading BERT (%s) on %s", self.model_name, self.device)
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self._model = AutoModel.from_pretrained(self.model_name)
-            self._model.to(self.device)
-            self._model.eval()
-
-    # --------------------------- public API ------------------------------- #
-
-    def __call__(self, prompts: pd.Series) -> np.ndarray:
-        """Vectorise a batch of prompts into CLS embeddings."""
-        self._lazy_load()
-        assert self._tokenizer and self._model
-        batch_size = 32
-        all_vecs: List[np.ndarray] = []
-
-        for i in tqdm(
-            range(0, len(prompts), batch_size), desc="Embedding prompts"
-        ):
-            batch = prompts.iloc[i : i + batch_size].tolist()
-            enc = self._tokenizer(
-                batch,
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_len,
-                return_tensors="pt",
-            ).to(self.device)
-            with torch.inference_mode():
-                out = self._model(**enc).last_hidden_state[:, 0, :].cpu().numpy()
-            all_vecs.append(out)
-
-        return np.vstack(all_vecs)
 
 
 ###############################################################################
@@ -711,8 +652,10 @@ class ANNPipelineRunner(BasePipelineRunner):
             "model__hidden_layer_sizes": [(64, 64)],
             "model__activation": ["relu"],
             "model__solver": ["adam"],
-            "model__alpha": [0.0001, 0.001, 0.00001],
-            "model__learning_rate": ["constant", "adaptive"]
+            # "model__alpha": [0.0001, 0.001, 0.00001],
+            "model__alpha": [0.0001],
+            # "model__learning_rate": ["constant", "adaptive"],
+            "model__learning_rate": ["constant"],
         }
 
     def _build_pipeline(self) -> Pipeline:
@@ -777,7 +720,8 @@ class SVRPipelineRunner(BasePipelineRunner):
     def __init__(self) -> None:
         super().__init__()
         self.param_grid = {
-            "model__C": [1.0, 10.0],
+            # "model__C": [1.0, 10.0],
+            "model__C": [1.0],
             # "model__gamma": ["scale", "auto"],
             "model__gamma": ["scale"],
             # "model__kernel": ["rbf", "poly"],
@@ -799,37 +743,37 @@ class SVRPipelineRunner(BasePipelineRunner):
 ###############################################################################
 #                GENERIC SUPERVISED MODEL RUNNER FUNCTION                     #
 ###############################################################################
-def run_supervised_models(
+def run_supervised_models(  # noqa: D401, PLR0913
     df: pd.DataFrame,
     runner_classes: Optional[List[type[BasePipelineRunner]]] = None,
+    n_splits: int = 5,
 ) -> Dict[str, Dict[str, Any]]:
-    """Execute multiple pipeline runners on the same feature matrix.
+    """Run multiple supervised runners with *k*-fold CV on the same features.
 
     Args:
-        df (pd.DataFrame): Input dataframe (already pre‑processed).
-        runner_classes (Optional[List[type[BasePipelineRunner]]]): List of
-            runner subclasses to execute. Defaults to a sensible set.
+        df: Pre-processed dataframe that already contains all engineered columns.
+        runner_classes: Optional list of PipelineRunner subclasses. If *None*,
+            defaults to ANN, RF, GB, and SVR runners.
+        n_splits: Number of folds for K-fold cross-validation.
 
     Returns:
-        Dict[str, Dict[str, Any]]: Mapping from model name to evaluation metrics.
+        Mapping ``{model_name: {'mse': …, 'mae': …, 'r2': …}}`` averaged
+        across *n_splits* folds.
     """
     import logging
-    from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import StandardScaler
     import numpy as np
 
     logger = logging.getLogger(__name__)
-    logger.info("Running supervised pipelines for multiple models.")
+    logger.info("Running supervised pipelines with %d-fold CV.", n_splits)
 
-    # --------------------------- data prep -------------------------------- #
-    y = df["value"]
+    # ── build full feature matrix once ─────────────────────────────────────
+    y = df["value"].reset_index(drop=True)
 
-    # Embed prompts once to reuse across models
-    logger.info("Embedding prompts via BERT (shared across models).")
+    logger.info("Embedding prompts (BERT CLS) once for all folds.")
     embedder = BertCLSEmbedder()
     X_text = embedder(df["prompt"])
 
-    # Scale structured numeric columns once
     structured_cols = [
         "word_count",
         "unique_word_count",
@@ -838,20 +782,12 @@ def run_supervised_models(
         "num_adjectives",
         "num_named_entities",
     ]
-    logger.info("Scaling structured numeric features.")
     scaler = StandardScaler()
     X_struct = scaler.fit_transform(df[structured_cols])
 
-    # Concatenate into final feature matrix
     X = np.hstack([X_text, X_struct])
 
-    # Consistent split for fair comparison
-    logger.info("Performing single train/test split (shared).")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-    # ------------------------- define runners ----------------------------- #
+    # ── choose runner classes ──────────────────────────────────────────────
     if runner_classes is None:
         runner_classes = [
             ANNPipelineRunner,
@@ -860,27 +796,44 @@ def run_supervised_models(
             SVRPipelineRunner,
         ]
 
-    results: Dict[str, Dict[str, Any]] = {}
+    results: Dict[str, Dict[str, float]] = {}
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    # ------------------------- run each model ----------------------------- #
+    # ── CV for each model ──────────────────────────────────────────────────
     for runner_cls in runner_classes:
-        model_name = runner_cls.__name__.replace("PipelineRunner", "")
-        logger.info("=== Fitting %s model ===", model_name)
-        runner = runner_cls()
-        results[model_name] = runner.fit(X_train, X_test, y_train, y_test)
+        name = runner_cls.__name__.replace("PipelineRunner", "")
+        logger.info("=== %s : %d-fold CV ===", name, n_splits)
+
+        fold_metrics: Dict[str, List[float]] = {"mse": [], "mae": [], "r2": []}
+
+        for train_idx, test_idx in tqdm(
+            kf.split(X), total=n_splits, desc=f"{name}-CV", leave=False
+        ):
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+            runner = runner_cls()
+            res = runner.fit(X_train, X_test, y_train, y_test)
+
+            for k in fold_metrics:
+                fold_metrics[k].append(res[k])
+
+        # average across folds
+        results[name] = {k: float(np.mean(v)) for k, v in fold_metrics.items()}
+
         logger.info(
-            "%s results — MSE: %.4f | MAE: %.4f | R²: %.4f",
-            model_name,
-            results[model_name]["mse"],
-            results[model_name]["mae"],
-            results[model_name]["r2"],
+            "%s CV results — MSE: %.4f | MAE: %.4f | R²: %.4f",
+            name,
+            results[name]["mse"],
+            results[name]["mae"],
+            results[name]["r2"],
         )
 
     return results
 
 
 ###############################################################################
-#  REVISED  KeyBERT_TFIDFPipelineRunner  – uses the cached attach_keywords    #
+#        KeyBERT_TFIDFPipelineRunner  – uses the cached attach_keywords       #
 ###############################################################################
 class KeyBERT_TFIDFPipelineRunner(BasePipelineRunner):
     """Pipeline runner using cached KeyBERT tokens + TF‑IDF vectorization."""
@@ -893,112 +846,204 @@ class KeyBERT_TFIDFPipelineRunner(BasePipelineRunner):
             "model__hidden_layer_sizes": [(64, 64)],
             "model__activation": ["relu"],
             "model__solver": ["adam"],
-            "model__learning_rate": ["constant", "adaptive"],
+            # "model__learning_rate": ["constant", "adaptive"],
+            "model__learning_rate": ["constant"],
         }
 
-    # ▼ this now loads from the shared cache instead of full extraction
     def _extract_keywords(self, prompts: pd.Series) -> List[str]:
-        """Return cached keywords aligned with *prompts* index."""
+        """Return cached keywords joined with ' | ' per prompt."""
         df_prompts = prompts.to_frame(name="prompt")
-        return attach_keywords(df_prompts).tolist()
+        return (
+            attach_keywords(df_prompts)
+            .apply(lambda kws: " | ".join(kws) if isinstance(kws, list) else kws)
+            .tolist()
+        )
 
-    def _build_pipeline(self) -> Pipeline:
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.neural_network import MLPRegressor
+    def _build_pipeline(self) -> Pipeline:  # noqa: D401
+        """Build TF-IDF → MLP pipeline with custom tokenizer preserving phrases."""
+        vec = TfidfVectorizer(
+            tokenizer=lambda x: x.split(" | "),
+            preprocessor=None,
+            token_pattern=None,
+        )
 
         return Pipeline(
             steps=[
-                ("vectorizer", TfidfVectorizer()),
+                ("vectorizer", vec),
                 ("model", MLPRegressor(max_iter=1000, random_state=42)),
             ]
         )
 
-
 ###############################################################################
-#      UPDATED  run_unsupervised_keybert_model – uses attach_keywords         #
+#            CROSS-VALIDATED  KeyBERT→TFIDF→MLP  WITH SHAP                    #
 ###############################################################################
-def run_unsupervised_keybert_model(df: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Regression with cached KeyBERT tokens  ➜  TF‑IDF ➜  MLP.
-    """
-    from sklearn.model_selection import train_test_split
-    logger = logging.getLogger(__name__)
-
-    y = df["value"]
-    keywords = attach_keywords(df)            # <-- cached look‑up
-    X_train, X_test, y_train, y_test = train_test_split(
-        keywords.tolist(), y, test_size=0.2, random_state=42
-    )
-
-    runner = KeyBERT_TFIDFPipelineRunner()
-    results = runner.fit(X_train, X_test, y_train, y_test)
-
-    logger.info(
-        "KeyBERT+TFIDF+MLP results — MSE: %.4f | MAE: %.4f | R²: %.4f",
-        results["mse"], results["mae"], results["r2"]
-    )
-    return results
-
-
-###############################################################################
-#   UPDATED  run_unsupervised_models – vectorizes via cached keywords         #
-###############################################################################
-def run_unsupervised_models(
+def run_unsupervised_keybert_model(  # noqa: D401, PLR0913
     df: pd.DataFrame,
-    runner_classes: Optional[List[type[BasePipelineRunner]]] = None,
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Evaluate multiple regressors on TF‑IDF vectors built from cached KeyBERT
-    keywords.
-    """
-    from sklearn.model_selection import train_test_split
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    logger = logging.getLogger(__name__)
-
-    y = df["value"]
-    keywords = attach_keywords(df)            # <-- cached look‑up
-    # df.drop(columns=["prompt"], inplace=True, errors='ignore')
-
-
-    tfidf = TfidfVectorizer(max_features=300)
-    X = tfidf.fit_transform(keywords.tolist())
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+    output_dir: Path,
+    n_splits: int = 5,
+) -> Dict[str, Any]:
+    """k-fold CV + SHAP for the KeyBERT-TFIDF-MLP pipeline."""
+    y = df["value"].reset_index(drop=True)
+    keywords = (
+        attach_keywords(df).apply(lambda kws: " | ".join(kws) if isinstance(kws, list) else kws)
     )
+
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    metrics: Dict[str, List[float]] = {"mse": [], "mae": [], "r2": []}
+    last_runner: Optional[KeyBERT_TFIDFPipelineRunner] = None
+
+    for fold, (tr_idx, te_idx) in enumerate(
+        tqdm(kf.split(keywords), total=n_splits, desc="KeyBERT-MLP-CV", leave=False)
+    ):
+        X_train = keywords.iloc[tr_idx].tolist()
+        X_test = keywords.iloc[te_idx].tolist()
+        y_train, y_test = y.iloc[tr_idx], y.iloc[te_idx]
+
+        runner = KeyBERT_TFIDFPipelineRunner()
+        res = runner.fit(X_train, X_test, y_train, y_test)
+        for k in metrics:
+            metrics[k].append(res[k])
+        last_runner = runner
+
+    agg = {k: float(np.mean(v)) for k, v in metrics.items()}
+
+    # ── SHAP on full fit ───────────────────────────────────────────────────
+    assert last_runner is not None
+    pipeline = last_runner._best_estimator
+    vec = pipeline.named_steps["vectorizer"]
+    X_full = vec.transform(keywords.tolist())
+    record_shap_tokens(
+        model=pipeline.named_steps["model"],
+        X=X_full,
+        feature_names=vec.get_feature_names_out().tolist(),
+        save_stem=output_dir / "KeyBERT_TFIDF_MLP_shap",
+    )
+    return agg
+
+
+###############################################################################
+#       CROSS-VALIDATED UNSUPERVISED MODELS  +  TOKEN-LEVEL SHAP              #
+###############################################################################
+def run_unsupervised_models(  # noqa: D401, PLR0913
+    df: pd.DataFrame,
+    output_dir: Path,
+    runner_classes: Optional[List[type[BasePipelineRunner]]] = None,
+    n_splits: int = 5,
+) -> Dict[str, Dict[str, Any]]:
+    """k-fold CV on TF-IDF keyword features for multiple regressors + SHAP."""
+    y = df["value"].reset_index(drop=True)
+    keywords = (
+        attach_keywords(df).apply(lambda kws: " | ".join(kws) if isinstance(kws, list) else kws)
+    )
+    tfidf = TfidfVectorizer(
+        max_features=300,
+        tokenizer=lambda x: x.split(" | "),
+        preprocessor=None,
+        token_pattern=None,
+    )
+    X_all = tfidf.fit_transform(keywords.tolist())
 
     if runner_classes is None:
         runner_classes = [
-            KeyBERT_TFIDFPipelineRunner,
             RandomForestPipelineRunner,
             GradientBoostingPipelineRunner,
             SVRPipelineRunner,
         ]
 
     results: Dict[str, Dict[str, Any]] = {}
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
     for runner_cls in runner_classes:
         name = runner_cls.__name__.replace("PipelineRunner", "")
-        logger.info("=== Fitting %s model ===", name)
+        logger.info("=== %s : %d-fold CV ===", name, n_splits)
 
-        if runner_cls is KeyBERT_TFIDFPipelineRunner:
-            # let its own helper handle vectorization
-            results[name] = run_unsupervised_keybert_model(df)
-        else:
+        fold_metrics: Dict[str, List[float]] = {"mse": [], "mae": [], "r2": []}
+        last_runner: Optional[BasePipelineRunner] = None
+
+        for tr_idx, te_idx in tqdm(
+            kf.split(X_all), total=n_splits, desc=f"{name}-CV", leave=False
+        ):
+            X_tr, X_te = X_all[tr_idx], X_all[te_idx]
+            y_tr, y_te = y.iloc[tr_idx], y.iloc[te_idx]
+
             runner = runner_cls()
-            results[name] = runner.fit(X_train, X_test, y_train, y_test)
+            res = runner.fit(X_tr, X_te, y_tr, y_te)
+            for k in fold_metrics:
+                fold_metrics[k].append(res[k])
+            last_runner = runner
 
-        logger.info(
-            "%s results — MSE: %.4f | MAE: %.4f | R²: %.4f",
-            name,
-            results[name]["mse"],
-            results[name]["mae"],
-            results[name]["r2"],
+        results[name] = {k: float(np.mean(v)) for k, v in fold_metrics.items()}
+
+        # ── SHAP on model trained on full data ──────────────────────────────
+        assert last_runner is not None
+        full_runner = runner_cls()
+        _ = full_runner.fit(X_all, X_all, y, y)
+        record_shap_tokens(
+            model=full_runner._best_estimator,
+            X=X_all,
+            feature_names=tfidf.get_feature_names_out().tolist(),
+            save_stem=output_dir / f"{name}_shap",
         )
+
+    results["KeyBERT"] = run_unsupervised_keybert_model(
+        df=df, output_dir=output_dir, n_splits=n_splits
+    )
     return results
 
 
 
 
+###############################################################################
+#                       SHAP UTILITIES FOR TOKENS                             #
+###############################################################################
+def record_shap_tokens(  # noqa: D401, PLR0913
+    model,
+    X,
+    feature_names: List[str],
+    save_stem: Path,
+    max_background: int = 100,
+    max_display: int = 20,
+) -> None:
+    """Save raw SHAP values, beeswarm plot, and CSV of mean |SHAP| per token."""
+    # ensure dense ndarray
+    X_dense = X if isinstance(X, np.ndarray) else X.toarray()
+
+    # choose explainer
+    if hasattr(model, "estimators_"):
+        explainer = shap.TreeExplainer(model)
+    else:
+        bg_idx = np.random.choice(
+            X_dense.shape[0], min(max_background, X_dense.shape[0]), replace=False
+        )
+        explainer = shap.KernelExplainer(model.predict, X_dense[bg_idx])
+
+    shap_values = explainer.shap_values(X_dense, nsamples=max_background)
+
+    # persist raw SHAP values
+    np.save(save_stem.with_suffix(".npy"), shap_values)
+
+    # save CSV with mean |SHAP| per token
+    sv = shap_values[0] if isinstance(shap_values, list) else shap_values
+    mean_abs = np.abs(sv).mean(axis=0)
+    pretty_names = [
+        phrase.strip().replace("  ", " ").replace("|", " |").replace("  ", " ")
+        for phrase in feature_names
+    ]
+    pd.DataFrame(
+        {"keyphrase": pretty_names, "mean_abs_shap": mean_abs}
+    ).to_csv(save_stem.with_suffix(".csv"), index=False)
+
+    # beeswarm plot
+    shap.summary_plot(
+        shap_values,
+        X_dense,
+        feature_names=feature_names,
+        max_display=max_display,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(save_stem.with_suffix(".png"))
+    plt.close()
 
 
 
@@ -1063,43 +1108,40 @@ def main():
     current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     for metric_table_name in metric_table_names:
         try:
-            logger.info(f"Processing table: {metric_table_name}")
+            logger.info("Processing table: %s", metric_table_name)
+
+            # ── load + feature-engineering ─────────────────────────────────
             df = load_metric_with_prompts(DB_PATH, metric_table_name)
-            
-            # Drop UUID column as it's not needed for training
-            df.drop(columns=["uuid"], inplace=True, errors='ignore')
-            
-            # Add prompt features
+            df.drop(columns=["uuid"], inplace=True, errors="ignore")
             df = add_prompt_features(df)
-            
-            # Preprocess the DataFrame
             df = preprocess_data(df)
-            
-            # Create a copy of the DataFrame for unsupervised models
-            df_unsupervised = df.copy()
-                        
-            supervised_results = run_supervised_models(df)
-            # unsupervised_results = run_unsupervised_models(df_unsupervised)
-            
-            # Save the results to a json file per table
-            results = {
-                "supervised": supervised_results,
-                # "unsupervised": unsupervised_results
-            }
-            
-            results_dir = RESULTS_DIR / f"results_{current_timestamp}"
+
+            # ── results folder ────────────────────────────────────────────
+            results_dir = (
+                RESULTS_DIR / f"results_{current_timestamp}" / metric_table_name
+            )
             results_dir.mkdir(parents=True, exist_ok=True)
-            results_file_path = results_dir / f"{metric_table_name}_results.json"
-            
-            # Save the results to a JSON file
-            with open(results_file_path, "w") as f:
-                json.dump(results, f, indent=4)
-        
-        except Exception as e:
-            # raise e
-            logger.error(f"Error processing table {metric_table_name}: {e}")
+
+            # ── run pipelines ─────────────────────────────────────────────
+            unsupervised_results = run_unsupervised_models(
+                df.copy(), output_dir=results_dir
+            )
+            supervised_results = run_supervised_models(df.copy())
+
+            # ── persist combined results ─────────────────────────────────
+            with open(results_dir / "results.json", "w") as fh:
+                json.dump(
+                    {
+                        "unsupervised": unsupervised_results,
+                        "supervised": supervised_results,
+                    },
+                    fh,
+                    indent=4,
+                )
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error processing %s: %s", metric_table_name, exc)
             continue
-        
 
 # ****
 if __name__ == "__main__":
