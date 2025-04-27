@@ -58,10 +58,10 @@ python -m spacy download en_core_web_sm
 ```
 
 ### Adding Files
-The logic for finding files is defined in `./main.py`. 
+The logic for finding files is defined in `./compute_metrics.py`. 
 UIDs are used to reference files in the Metric classes and so each file must have a UID that is capable of being generated with just the file path as input.
 Currently, the application is tied to the [DiffusionDB](https://poloclub.github.io/diffusiondb/), so UIDs and file paths are based on its structure.
-If additional databases are desired, new logic to relate the file paths & UIDs is necessary and generation must be changed in `main.py`.
+If additional databases are desired, new logic to relate the file paths & UIDs is necessary and generation must be changed in `compute_metrics.py`.
 
 #### `DiffusionDB` Data Download
 The Poloclub downloader script is provided in the `./scripts/` directory. 
